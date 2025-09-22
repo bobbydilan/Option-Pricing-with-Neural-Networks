@@ -18,34 +18,24 @@ import warnings
 warnings.filterwarnings('ignore')
 
 SEED = 42
-
-# EXACT MLP CONFIGURATION
 TRAIN_RATIO = 0.7
 VALIDATION_RATIO = 0.15
 TEST_RATIO = 0.15
-VAL_TEST_SPLIT = VALIDATION_RATIO / (1 - TRAIN_RATIO)  # MLP2 exact format
+VAL_TEST_SPLIT = VALIDATION_RATIO / (1 - TRAIN_RATIO)
 _TEMP_TOTAL = max(1e-12, 1.0 - TRAIN_RATIO)
 VAL_FRACTION_OF_TEMP = VALIDATION_RATIO / _TEMP_TOTAL
 TEST_FRACTION_OF_TEMP = 1.0 - VAL_FRACTION_OF_TEMP
-
-# Time-based split options (matching MLP exactly)
 USE_TIME_BASED_SPLIT = True
 USE_TIME_PERCENT_SPLIT = True
 TIME_SPLIT_FRACTION = TRAIN_RATIO
-
-# Stratification options
-USE_MULTI_DIM_STRATIFICATION = True
-
-# Data Filtering Options (EXACT MLP parameter names)
+USE_MULTI_DIM_STRATIFICATION = False
 SAMPLE_SIZE = 10000000
 ZERO_VOLUME_INCLUSION = 0.5
-MONEYNESS_LOWER_BOUND = 0.5   
-MONEYNESS_UPPER_BOUND = 1.5   
-MIN_DAYS_TO_MATURITY = 0                
-MAX_DAYS_TO_MATURITY = 750              
+MONEYNESS_LOWER_BOUND = 0.5
+MONEYNESS_UPPER_BOUND = 1.5
+MIN_DAYS_TO_MATURITY = 0
+MAX_DAYS_TO_MATURITY = 750
 FILTER_VALID_SPREAD = False
-
-# Percentage Bid-Ask Spread Filter (EXACT MLP parameters)
 SPREAD_FILTER_ENABLED = False
 MIN_SPREAD_PCT = None
 MAX_SPREAD_PCT = None
@@ -54,25 +44,24 @@ MAX_SPREAD_PCT = None
 BASE_FEATURES = ['strike_price', 'historical_volatility', 'dividend_rate', 'risk_free_rate', 'days_to_maturity', 'spx_close']
 ADDITIONAL_RAW_FEATURES = ['volume', 'hist_vol_10d', 'hist_vol_30d', 'hist_vol_90d', 'spx_open', 'spx_high', 'spx_low', 'moneyness', 'open_interest', 'epu_index', 'equity_uncertainty', 'equity_volatility']
 
+'''
+'volume', 'hist_vol_10d', 'hist_vol_30d', 'hist_vol_90d', 'spx_open', 'spx_high', 'spx_low', 'moneyness', 'open_interest', 'epu_index', 'equity_uncertainty', 'equity_volatility
+'''
+
 # Model Parameters
 POLY_DEGREE = 2
 INCLUDE_INTERACTION_TERMS = False
 
 SELECTED_FEATURES = [
-    'strike_price','historical_volatility','dividend_rate', 'risk_free_rate', 'days_to_maturity', 'spx_close']
+    'strike_price','historical_volatility','dividend_rate', 'risk_free_rate', 'days_to_maturity', 'spx_close']  #, 'volume', 'open_interest', 'epu_index'
 
 RESULTS_FOLDER = 'results'
 USE_TIMESTAMP = True
 
-# Moneyness buckets (S/K): Deep OTM, OTM, ATM, ITM, Deep ITM
-MONEYNESS_BINS_EDGES = [0, 0.8, 0.95, 1.05, 1.2, np.inf]
-MONEYNESS_BIN_LABELS = ['Deep OTM', 'OTM', 'ATM', 'ITM', 'Deep ITM']
-
-# Time-to-expiration buckets in years: <1M, 1-3M, 3-6M, 6M-1Y, >1Y
-TIME_BINS_EDGES = [0, 0.08, 0.25, 0.5, 1.0, np.inf]
-TIME_BIN_LABELS = ['<1M', '1-3M', '3-6M', '6M-1Y', '>1Y']
-
-# Finer-resolution bins for pivot grid visualization
+MONEYNESS_BINS_EDGES = [0, 0.9, 1.1, np.inf]
+MONEYNESS_BIN_LABELS = ['OTM\n(<0.9)', 'ATM\n(0.9-1.1)', 'ITM\n(>1.1)']
+TIME_BINS_EDGES = [0, 0.083, 0.25, 0.5, 0.75, 1.0, np.inf]
+TIME_BIN_LABELS = ['≤1M\n(≤30d)', '1-3M\n(31-91d)', '3-6M\n(92-182d)', '6-9M\n(183-274d)', '9-12M\n(275-365d)', '>12M\n(>365d)']
 MONEYNESS_BINS = np.linspace(0.7, 1.3, 13)
 TIME_BINS = np.linspace(0, 2, 9)
 MONEYNESS_LABELS = [f'{MONEYNESS_BINS[i]:.2f}-{MONEYNESS_BINS[i+1]:.2f}' for i in range(len(MONEYNESS_BINS)-1)]
@@ -88,14 +77,159 @@ def setup_plot_style():
         'axes.linewidth': 0.5
     })
 
+def get_volume_buckets(volume):
+    """Create volume buckets for analysis"""
+    volume_bins = [-0.1, 0, 100, 1000, np.inf]
+    volume_labels = ['0', '0-100', '100-1000', '1000+']
+    return pd.cut(volume, bins=volume_bins, labels=volume_labels, include_lowest=True)
+
+def get_hv_buckets(hv_series: pd.Series) -> pd.Categorical:
+    """Create historical volatility quantile buckets for analysis"""
+    return pd.qcut(hv_series, q=5, labels=['Q1', 'Q2', 'Q3', 'Q4', 'Q5'], duplicates='drop')
+
+def get_price_buckets(price_series: pd.Series) -> pd.Categorical:
+    """Create price quantile buckets for analysis"""
+    return pd.qcut(price_series, q=5, labels=['Q1', 'Q2', 'Q3', 'Q4', 'Q5'], duplicates='drop')
+
+def get_uncertainty_buckets(uncertainty_series: pd.Series) -> pd.Categorical:
+    """Create equity uncertainty buckets for analysis"""
+    uncertainty_bins = [0, 50, 100, 150, np.inf]
+    uncertainty_labels = ['Low (<50)', 'Medium (50-100)', 'High (100-150)', 'Very High (>150)']
+    return pd.cut(uncertainty_series, bins=uncertainty_bins, labels=uncertainty_labels, include_lowest=True)
+
+def create_bucket_bar_plot(ax, analysis_df, metric_col, count_col, title, ylabel, color, rotation=0):
+    """Reusable function for creating bucket analysis bar plots"""
+    if analysis_df.empty:
+        ax.text(0.5, 0.5, 'Data not available', ha='center', va='center', 
+                transform=ax.transAxes, fontsize=12)
+        ax.set_title(title, fontsize=14, fontweight='bold')
+        return
+    
+    bars = ax.bar(range(len(analysis_df)), analysis_df[metric_col], 
+                  color=color, alpha=0.8, edgecolor='black')
+    
+    for i, (bar, count) in enumerate(zip(bars, analysis_df[count_col])):
+        ax.text(bar.get_x() + bar.get_width()/2, bar.get_height() + max(analysis_df[metric_col]) * 0.01,
+                f'n={count:,}', ha='center', va='bottom', fontsize=8)
+    
+    ax.set_xticks(range(len(analysis_df)))
+    ax.set_xticklabels(analysis_df.index, rotation=rotation, ha='right' if rotation > 0 else 'center')
+    ax.set_title(title, fontsize=14, fontweight='bold')
+    ax.set_ylabel(ylabel, fontsize=12)
+    ax.grid(True, alpha=0.3)
+
 def get_moneyness_buckets(moneyness_series: pd.Series) -> pd.Categorical:
     return pd.cut(moneyness_series, bins=MONEYNESS_BINS_EDGES, labels=MONEYNESS_BIN_LABELS, include_lowest=True)
 
 def get_time_buckets(time_years_series: pd.Series) -> pd.Categorical:
     return pd.cut(time_years_series, bins=TIME_BINS_EDGES, labels=TIME_BIN_LABELS, include_lowest=True)
 
+def perform_bucket_analysis(df_test, results_dir):
+    """Perform comprehensive bucket analysis across option characteristics"""
+    print("\n=== PERFORMING BUCKET ANALYSIS ===")
+    
+    if len(df_test) == 0 or 'price_error' not in df_test.columns:
+        print("Warning: Missing required columns for bucket analysis")
+        return
+    
+    analysis_results = {}
+    
+    # Moneyness Analysis
+    if 'moneyness' in df_test.columns:
+        df_analysis = df_test.copy()
+        df_analysis['moneyness_bucket'] = get_moneyness_buckets(df_analysis['moneyness'])
+        analysis_results['moneyness'] = df_analysis.groupby('moneyness_bucket').agg({
+            'price_error': ['count', lambda x: np.mean(np.abs(x)), 'median', 'std'],
+            'abs_pct_error': 'mean'
+        }).round(4)
+        analysis_results['moneyness'].columns = ['Count', 'MAE', 'Median', 'SD', 'MAPE']
+        analysis_results['moneyness'] = analysis_results['moneyness'][['Count', 'MAE', 'MAPE', 'Median', 'SD']]
+    
+    # Time to Expiration Analysis
+    if 'days_to_maturity' in df_test.columns:
+        df_analysis = df_test.copy()
+        df_analysis['tte_bucket'] = get_time_buckets(df_analysis['days_to_maturity'] / 365.25)
+        analysis_results['time_to_expiration'] = df_analysis.groupby('tte_bucket').agg({
+            'price_error': ['count', lambda x: np.mean(np.abs(x)), 'median', 'std'],
+            'abs_pct_error': 'mean'
+        }).round(4)
+        analysis_results['time_to_expiration'].columns = ['Count', 'MAE', 'Median', 'SD', 'MAPE']
+        analysis_results['time_to_expiration'] = analysis_results['time_to_expiration'][['Count', 'MAE', 'MAPE', 'Median', 'SD']]
+    
+    # Volume Analysis
+    if 'volume' in df_test.columns:
+        df_analysis = df_test.copy()
+        df_analysis['volume_bucket'] = get_volume_buckets(df_analysis['volume'])
+        analysis_results['volume'] = df_analysis.groupby('volume_bucket').agg({
+            'price_error': ['count', lambda x: np.mean(np.abs(x)), 'median', 'std'],
+            'abs_pct_error': 'mean'
+        }).round(4)
+        analysis_results['volume'].columns = ['Count', 'MAE', 'Median', 'SD', 'MAPE']
+        analysis_results['volume'] = analysis_results['volume'][['Count', 'MAE', 'MAPE', 'Median', 'SD']]
+    
+    # Historical Volatility Analysis
+    if 'historical_volatility' in df_test.columns:
+        df_analysis = df_test.copy()
+        df_analysis['historical_volatility_bucket'] = get_hv_buckets(df_analysis['historical_volatility'])
+        
+        # Get quantile ranges for display
+        hv_quantiles = df_analysis['historical_volatility'].quantile([0, 0.2, 0.4, 0.6, 0.8, 1.0])
+        hv_ranges = {}
+        for i, q in enumerate(['Q1', 'Q2', 'Q3', 'Q4', 'Q5']):
+            min_val = hv_quantiles.iloc[i]
+            max_val = hv_quantiles.iloc[i+1]
+            hv_ranges[q] = f"Q{i+1} ({min_val:.3f} - {max_val:.3f})"
+        
+        hv_analysis = df_analysis.groupby('historical_volatility_bucket').agg({
+            'price_error': ['count', lambda x: np.mean(np.abs(x)), 'median', 'std'],
+            'abs_pct_error': 'mean'
+        }).round(4)
+        hv_analysis.columns = ['Count', 'MAE', 'Median', 'SD', 'MAPE']
+        hv_analysis = hv_analysis[['Count', 'MAE', 'MAPE', 'Median', 'SD']]
+        
+        # Rename index with ranges
+        hv_analysis.index = [hv_ranges.get(str(idx), str(idx)) for idx in hv_analysis.index]
+        analysis_results['historical_volatility'] = hv_analysis
+    
+    # Price Range Analysis
+    if 'mid_price' in df_test.columns:
+        df_analysis = df_test.copy()
+        df_analysis['price_bucket'] = get_price_buckets(df_analysis['mid_price'])
+        
+        # Get quantile ranges for display
+        price_quantiles = df_analysis['mid_price'].quantile([0, 0.2, 0.4, 0.6, 0.8, 1.0])
+        price_ranges = {}
+        for i, q in enumerate(['Q1', 'Q2', 'Q3', 'Q4', 'Q5']):
+            min_val = price_quantiles.iloc[i]
+            max_val = price_quantiles.iloc[i+1]
+            price_ranges[q] = f"Q{i+1} (${min_val:.2f} - ${max_val:.2f})"
+        
+        price_analysis = df_analysis.groupby('price_bucket').agg({
+            'price_error': ['count', lambda x: np.mean(np.abs(x)), 'median', 'std'],
+            'abs_pct_error': 'mean'
+        }).round(4)
+        price_analysis.columns = ['Count', 'MAE', 'Median', 'SD', 'MAPE']
+        price_analysis = price_analysis[['Count', 'MAE', 'MAPE', 'Median', 'SD']]
+        
+        # Rename index with ranges
+        price_analysis.index = [price_ranges.get(str(idx), str(idx)) for idx in price_analysis.index]
+        analysis_results['price_range'] = price_analysis
+    
+    # Equity Uncertainty Analysis
+    if 'equity_uncertainty' in df_test.columns:
+        df_analysis = df_test.copy()
+        df_analysis['uncertainty_bucket'] = get_uncertainty_buckets(df_analysis['equity_uncertainty'])
+        analysis_results['equity_uncertainty'] = df_analysis.groupby('uncertainty_bucket').agg({
+            'price_error': ['count', lambda x: np.mean(np.abs(x)), 'median', 'std'],
+            'abs_pct_error': 'mean'
+        }).round(4)
+        analysis_results['equity_uncertainty'].columns = ['Count', 'MAE', 'Median', 'SD', 'MAPE']
+        analysis_results['equity_uncertainty'] = analysis_results['equity_uncertainty'][['Count', 'MAE', 'MAPE', 'Median', 'SD']]
+    
+    print("=== BUCKET ANALYSIS COMPLETE ===\n")
+    return analysis_results
+
 def create_data_splits(X, y, df, indices):
-    """EXACT COPY of MLP's create_data_splits function"""
     if USE_TIME_BASED_SPLIT and 'date' in df.columns:
         if USE_TIME_PERCENT_SPLIT:
             # Percentage-based chronological split
@@ -190,7 +324,6 @@ def create_data_splits(X, y, df, indices):
     return X_train, X_val, X_test, y_train, y_val, y_test, idx_train, idx_val, idx_test
 
 def create_random_splits(X, y, indices, df):
-    """EXACT COPY of MLP2's create_random_splits function"""
     if USE_MULTI_DIM_STRATIFICATION:
         # Create stratification labels
         df_subset = df.iloc[indices] if indices is not None else df
@@ -271,11 +404,15 @@ def create_results_folder():
     else:
         results_dir = os.path.join(script_dir, RESULTS_FOLDER)
     
-    os.makedirs(results_dir, exist_ok=True)
+    try:
+        os.makedirs(results_dir, exist_ok=True)
+        print(f"Created results directory: {results_dir}")
+    except Exception as e:
+        print(f"Error creating results directory: {e}")
+        raise
     return results_dir
 
 def load_dataset(csv_path: str):
-    """EXACT COPY of MLP's load_dataset function"""
     df = pd.read_csv(csv_path)
     
     # Convert date column if it exists for time-based splitting
@@ -410,6 +547,15 @@ def load_dataset(csv_path: str):
             print("Excluded all zero-volume options")
         
         print(f"Applied zero volume filter (inclusion rate: {ZERO_VOLUME_INCLUSION:.1%}): {len(df):,} rows (removed {initial_count - len(df):,})")
+        # --- Reorder rows to avoid volume-block bias before splitting ---
+        # If we do a time-based percent split, ensure chronological ordering.
+        # Otherwise, shuffle to remove any concatenation-induced blocks.
+        if USE_TIME_BASED_SPLIT and USE_TIME_PERCENT_SPLIT and 'date' in df.columns:
+            df = df.sort_values('date').reset_index(drop=True)
+            print("Re-sorted dataset by date to support time-based percent split.")
+        else:
+            df = df.sample(frac=1, random_state=SEED).reset_index(drop=True)
+            print("Shuffled dataset rows to avoid ordering bias during random split.")
 
     # Sample if needed
     if len(df) > SAMPLE_SIZE:
@@ -831,143 +977,332 @@ def plot_residuals_vs_features(y_true, y_pred, X_test, df_test, results_dir):
     plt.close()
     print(f"Residuals vs features plots saved to {save_path}")
 
-def plot_error_by_features(y_true, y_pred, df_test, results_dir):
-    """Create error analysis by features"""
-    residuals = y_pred - y_true
-    abs_residuals = np.abs(residuals)
-    pct_error = 100 * residuals / np.maximum(np.abs(y_true), 1e-8)
-    abs_pct_error = np.abs(pct_error)
+def create_mae_analysis(y_true, y_pred, df_test, results_dir):
+    """Create MAE analysis by features"""
+    print("Creating MAE analysis by features...")
     
-    plt.figure(figsize=(16, 12))
+    if len(df_test) == 0:
+        print("   Warning: Empty dataset, skipping MAE analysis")
+        return
     
-    # 1. Error by Price Quantiles
-    plt.subplot(2, 2, 1)
-    quantiles = pd.qcut(y_true, q=5, labels=['Q1', 'Q2', 'Q3', 'Q4', 'Q5'], duplicates='drop')
+    # Add price_error column to df_test for analysis
+    df_analysis = df_test.copy()
+    df_analysis['price_error'] = y_pred - y_true
     
-    error_by_quantile = []
+    fig, axes = plt.subplots(3, 2, figsize=(16, 18))
+    
+    # 1. MAE by Price Quantiles
+    ax1 = axes[0, 0]
+    price_quantiles = pd.qcut(y_true, q=5, labels=False, duplicates='drop')
+    mae_by_quantile = []
     quantile_labels = []
     quantile_counts = []
     
-    for q in ['Q1', 'Q2', 'Q3', 'Q4', 'Q5']:
-        mask = quantiles == q
+    unique_quantiles = sorted(np.unique(price_quantiles[~pd.isna(price_quantiles)]))
+    for q in unique_quantiles:
+        mask = price_quantiles == q
         if mask.sum() > 0:
-            error_by_quantile.append(abs_residuals[mask].mean())
-            quantile_labels.append(q)
+            subset_prices = y_true[mask]
+            min_price = subset_prices.min()
+            max_price = subset_prices.max()
+            mae_by_quantile.append(np.mean(np.abs(df_analysis[mask]['price_error'])))
+            quantile_labels.append(f'${min_price:.0f}-\n${max_price:.0f}')
             quantile_counts.append(mask.sum())
     
-    bars1 = plt.bar(quantile_labels, error_by_quantile, color='lightblue', alpha=0.7)
-    plt.xlabel('Price Quantiles', fontsize=12)
-    plt.ylabel('Mean Absolute Error ($)', fontsize=12)
-    plt.title('Error by Price Quantiles', fontsize=14, fontweight='bold')
-    plt.grid(True, alpha=0.3)
+    bars1 = ax1.bar(quantile_labels, mae_by_quantile, color='lightblue', alpha=0.8, edgecolor='black')
+    for i, (bar, count) in enumerate(zip(bars1, quantile_counts)):
+        ax1.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 0.1,
+                f'n={count:,}', ha='center', va='bottom', fontsize=8)
+    ax1.set_title('Mean Absolute Error by Price Quantiles', fontsize=14, fontweight='bold')
+    ax1.set_ylabel('Mean Absolute Error ($)', fontsize=12)
+    ax1.grid(True, alpha=0.3)
     
-    # Add data point counts on bars
-    for bar, count in zip(bars1, quantile_counts):
-        height = bar.get_height()
-        plt.text(bar.get_x() + bar.get_width()/2., height + height*0.01,
-                f'n={count}', ha='center', va='bottom', fontsize=9, fontweight='bold')
+    # 2. MAE by Moneyness
+    ax2 = axes[0, 1]
+    if 'moneyness' in df_analysis.columns:
+        df_analysis['moneyness_bucket'] = get_moneyness_buckets(df_analysis['moneyness'])
+        moneyness_analysis = df_analysis.groupby('moneyness_bucket').agg({
+            'price_error': lambda x: np.mean(np.abs(x)),
+            'moneyness': 'count'
+        }).reset_index()
+        moneyness_analysis.columns = ['moneyness_bucket', 'mae', 'count']
+        
+        bars2 = ax2.bar(range(len(moneyness_analysis)), moneyness_analysis['mae'], 
+                       color='orange', alpha=0.8, edgecolor='black')
+        for i, (bar, count) in enumerate(zip(bars2, moneyness_analysis['count'])):
+            ax2.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 0.1,
+                    f'n={count:,}', ha='center', va='bottom', fontsize=8)
+        ax2.set_xticks(range(len(moneyness_analysis)))
+        ax2.set_xticklabels(moneyness_analysis['moneyness_bucket'])
+    else:
+        ax2.text(0.5, 0.5, 'Moneyness data not available', ha='center', va='center', 
+                transform=ax2.transAxes, fontsize=12)
+    ax2.set_title('Mean Absolute Error by Moneyness', fontsize=14, fontweight='bold')
+    ax2.set_ylabel('Mean Absolute Error ($)', fontsize=12)
+    ax2.grid(True, alpha=0.3)
     
-    # 2. Error by Moneyness
-    plt.subplot(2, 2, 2)
-    if 'moneyness' in df_test.columns:
-        moneyness = df_test['moneyness']
-        moneyness_buckets = get_moneyness_buckets(moneyness)
-        
-        bucket_errors = []
-        bucket_labels = []
-        bucket_counts = []
-        
-        for bucket in MONEYNESS_BIN_LABELS:
-            mask = moneyness_buckets == bucket
-            if mask.sum() > 0:
-                bucket_errors.append(abs_pct_error[mask].mean())
-                bucket_labels.append(bucket)
-                bucket_counts.append(mask.sum())
-        
-        bars2 = plt.bar(bucket_labels, bucket_errors, color='orange', alpha=0.7)
-        plt.xlabel('Moneyness Buckets', fontsize=12)
-        plt.ylabel('Mean Abs Percentage Error (%)', fontsize=12)
-        plt.title('Error by Moneyness', fontsize=14, fontweight='bold')
-        plt.xticks(rotation=45)
-        plt.grid(True, alpha=0.3)
-        
-        # Add data point counts on bars
-        for bar, count in zip(bars2, bucket_counts):
-            height = bar.get_height()
-            plt.text(bar.get_x() + bar.get_width()/2., height + height*0.01,
-                    f'n={count}', ha='center', va='bottom', fontsize=9, fontweight='bold')
+    # 3. MAE by Time to Expiration
+    ax3 = axes[1, 0]
+    df_analysis['tte_bucket'] = get_time_buckets(df_analysis['days_to_maturity'] / 365.25)
+    tte_analysis = df_analysis.groupby('tte_bucket').agg({
+        'price_error': lambda x: np.mean(np.abs(x)),
+        'days_to_maturity': 'count'
+    }).reset_index()
+    tte_analysis.columns = ['tte_bucket', 'mae', 'count']
     
-    # 3. Error by Time to Maturity
-    plt.subplot(2, 2, 3)
-    if 'days_to_maturity' in df_test.columns:
-        days_to_maturity = df_test['days_to_maturity']
-        time_buckets = get_time_buckets(days_to_maturity / 365.25)
-        
-        time_errors = []
-        time_labels = []
-        time_counts = []
-        
-        for bucket in TIME_BIN_LABELS:
-            mask = time_buckets == bucket
-            if mask.sum() > 0:
-                time_errors.append(abs_pct_error[mask].mean())
-                time_labels.append(bucket)
-                time_counts.append(mask.sum())
-        
-        bars3 = plt.bar(time_labels, time_errors, color='purple', alpha=0.7)
-        plt.xlabel('Time to Expiration', fontsize=12)
-        plt.ylabel('Mean Abs Percentage Error (%)', fontsize=12)
-        plt.title('Error by Time to Maturity', fontsize=14, fontweight='bold')
-        plt.xticks(rotation=45)
-        plt.grid(True, alpha=0.3)
-        
-        # Add data point counts on bars
-        for bar, count in zip(bars3, time_counts):
-            height = bar.get_height()
-            plt.text(bar.get_x() + bar.get_width()/2., height + height*0.01,
-                    f'n={count}', ha='center', va='bottom', fontsize=9, fontweight='bold')
+    bars3 = ax3.bar(range(len(tte_analysis)), tte_analysis['mae'], 
+                   color='green', alpha=0.8, edgecolor='black')
+    for i, (bar, count) in enumerate(zip(bars3, tte_analysis['count'])):
+        ax3.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 0.1,
+                f'n={count:,}', ha='center', va='bottom', fontsize=8)
+    ax3.set_xticks(range(len(tte_analysis)))
+    ax3.set_xticklabels(tte_analysis['tte_bucket'])
+    ax3.set_title('Mean Absolute Error by Time to Expiration', fontsize=14, fontweight='bold')
+    ax3.set_ylabel('Mean Absolute Error ($)', fontsize=12)
+    ax3.grid(True, alpha=0.3)
     
-    # 4. Error by Historical Volatility
-    plt.subplot(2, 2, 4)
-    if 'historical_volatility' in df_test.columns:
-        volatility = df_test['historical_volatility']
-        vol_quantiles = pd.qcut(volatility, q=4, labels=['Low Vol', 'Med-Low Vol', 'Med-High Vol', 'High Vol'], duplicates='drop')
-        
-        vol_errors = []
+    # 4. MAE by Historical Volatility
+    ax4 = axes[1, 1]
+    if 'historical_volatility' in df_analysis.columns:
+        vol_quantiles = pd.qcut(df_analysis['historical_volatility'], q=5, labels=False, duplicates='drop')
+        mae_by_vol = []
         vol_labels = []
-        vol_bounds = []
         vol_counts = []
         
-        for i, vol_label in enumerate(['Low Vol', 'Med-Low Vol', 'Med-High Vol', 'High Vol']):
-            mask = vol_quantiles == vol_label
+        unique_quantiles = sorted(vol_quantiles[~pd.isna(vol_quantiles)].unique())
+        for q in unique_quantiles:
+            mask = vol_quantiles == q
             if mask.sum() > 0:
-                vol_errors.append(abs_pct_error[mask].mean())
-                vol_labels.append(vol_label)
-                vol_min = volatility[mask].min()
-                vol_max = volatility[mask].max()
-                vol_bounds.append(f'{vol_min:.2f}-{vol_max:.2f}')
+                subset_vol = df_analysis[mask]['historical_volatility']
+                min_vol = subset_vol.min()
+                max_vol = subset_vol.max()
+                mae_by_vol.append(np.mean(np.abs(df_analysis[mask]['price_error'])))
+                vol_labels.append(f'{min_vol:.2f}-\n{max_vol:.2f}')
                 vol_counts.append(mask.sum())
         
-        bars4 = plt.bar(vol_labels, vol_errors, color='green', alpha=0.7)
-        plt.xlabel('Historical Volatility Quartiles', fontsize=12)
-        plt.ylabel('Mean Abs Percentage Error (%)', fontsize=12)
-        plt.title('Error by Historical Volatility', fontsize=14, fontweight='bold')
-        plt.xticks(rotation=45)
-        plt.grid(True, alpha=0.3)
+        bars4 = ax4.bar(vol_labels, mae_by_vol, color='purple', alpha=0.8, edgecolor='black')
+        for i, (bar, count) in enumerate(zip(bars4, vol_counts)):
+            ax4.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 0.1,
+                    f'n={count:,}', ha='center', va='bottom', fontsize=8)
+    else:
+        ax4.text(0.5, 0.5, 'Historical volatility data not available', ha='center', va='center', 
+                transform=ax4.transAxes, fontsize=12)
+    ax4.set_title('Mean Absolute Error by Historical Volatility', fontsize=14, fontweight='bold')
+    ax4.set_ylabel('Mean Absolute Error ($)', fontsize=12)
+    ax4.grid(True, alpha=0.3)
+    
+    # 5. MAE by Volume (if available)
+    ax5 = axes[2, 0]
+    if 'volume' in df_analysis.columns:
+        df_analysis['volume_bucket'] = get_volume_buckets(df_analysis['volume'])
+        volume_analysis = df_analysis.groupby('volume_bucket').agg({
+            'price_error': lambda x: np.mean(np.abs(x)),
+            'volume': 'count'
+        }).reset_index()
+        volume_analysis.columns = ['volume_bucket', 'mae', 'count']
         
-        # Add bounds and counts as text on bars
-        for bar, bound, count in zip(bars4, vol_bounds, vol_counts):
-            height = bar.get_height()
-            plt.text(bar.get_x() + bar.get_width()/2., height + height*0.01,
-                    bound, ha='center', va='bottom', fontsize=8)
-            plt.text(bar.get_x() + bar.get_width()/2., height + height*0.08,
-                    f'n={count}', ha='center', va='bottom', fontsize=9, fontweight='bold')
+        bars5 = ax5.bar(range(len(volume_analysis)), volume_analysis['mae'], 
+                       color='skyblue', alpha=0.8, edgecolor='black')
+        for i, (bar, count) in enumerate(zip(bars5, volume_analysis['count'])):
+            ax5.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 0.1,
+                    f'n={count:,}', ha='center', va='bottom', fontsize=8)
+        ax5.set_xticks(range(len(volume_analysis)))
+        ax5.set_xticklabels(volume_analysis['volume_bucket'], rotation=45, ha='right')
+    else:
+        ax5.text(0.5, 0.5, 'Volume data not available', ha='center', va='center', 
+                transform=ax5.transAxes, fontsize=12)
+    ax5.set_title('Mean Absolute Error by Volume', fontsize=14, fontweight='bold')
+    ax5.set_ylabel('Mean Absolute Error ($)', fontsize=12)
+    ax5.grid(True, alpha=0.3)
+    
+    # 6. MAE by Equity Uncertainty
+    ax6 = axes[2, 1]
+    if 'equity_uncertainty' in df_analysis.columns:
+        df_analysis['uncertainty_bucket'] = get_uncertainty_buckets(df_analysis['equity_uncertainty'])
+        uncertainty_analysis = df_analysis.groupby('uncertainty_bucket').agg({
+            'price_error': lambda x: np.mean(np.abs(x)),
+            'equity_uncertainty': 'count'
+        }).reset_index()
+        uncertainty_analysis.columns = ['uncertainty_bucket', 'mae', 'count']
+        
+        create_bucket_bar_plot(ax6, uncertainty_analysis.set_index('uncertainty_bucket'), 
+                              'mae', 'count', 'Mean Absolute Error by Equity Uncertainty', 
+                              'Mean Absolute Error ($)', 'red', rotation=45)
+    else:
+        ax6.text(0.5, 0.5, 'Equity uncertainty data not available', ha='center', va='center', 
+                transform=ax6.transAxes, fontsize=12)
+        ax6.set_title('Mean Absolute Error by Equity Uncertainty', fontsize=14, fontweight='bold')
+        ax6.grid(True, alpha=0.3)
     
     plt.tight_layout(pad=3.0)
-    save_path = os.path.join(results_dir, 'error_by_features.png')
-    plt.savefig(save_path, dpi=300, bbox_inches='tight')
+    plt.savefig(os.path.join(results_dir, 'mae_by_features.png'), dpi=300, bbox_inches='tight')
     plt.close()
-    print(f"Error by features analysis saved to {save_path}")
+    print("MAE by features analysis saved")
+
+def create_mape_analysis(y_true, y_pred, df_test, results_dir):
+    """Create MAPE analysis by features"""
+    print("Creating MAPE analysis by features...")
+    
+    if len(df_test) == 0:
+        print("   Warning: Empty dataset, skipping MAPE analysis")
+        return
+    
+    # Calculate percentage errors
+    pct_error = 100 * (y_pred - y_true) / np.maximum(np.abs(y_true), 1e-8)
+    abs_pct_error = np.abs(pct_error)
+    
+    df_analysis = df_test.copy()
+    df_analysis['abs_pct_error'] = abs_pct_error
+    
+    fig, axes = plt.subplots(3, 2, figsize=(16, 18))
+    
+    # 1. MAPE by Price Quantiles
+    ax1 = axes[0, 0]
+    price_quantiles = pd.qcut(y_true, q=5, labels=False, duplicates='drop')
+    mape_by_quantile = []
+    quantile_labels = []
+    quantile_counts = []
+    
+    unique_quantiles = sorted(np.unique(price_quantiles[~pd.isna(price_quantiles)]))
+    for q in unique_quantiles:
+        mask = price_quantiles == q
+        if mask.sum() > 0:
+            subset_prices = y_true[mask]
+            min_price = subset_prices.min()
+            max_price = subset_prices.max()
+            mape_by_quantile.append(np.mean(df_analysis[mask]['abs_pct_error']))
+            quantile_labels.append(f'${min_price:.0f}-\n${max_price:.0f}')
+            quantile_counts.append(mask.sum())
+    
+    bars1 = ax1.bar(quantile_labels, mape_by_quantile, color='lightblue', alpha=0.8, edgecolor='black')
+    for i, (bar, count) in enumerate(zip(bars1, quantile_counts)):
+        ax1.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 0.1,
+                f'n={count:,}', ha='center', va='bottom', fontsize=8)
+    ax1.set_title('MAPE by Price Quantiles', fontsize=14, fontweight='bold')
+    ax1.set_ylabel('Mean Absolute Percentage Error (%)', fontsize=12)
+    ax1.grid(True, alpha=0.3)
+    
+    # 2. MAPE by Moneyness
+    ax2 = axes[0, 1]
+    if 'moneyness' in df_analysis.columns:
+        df_analysis['moneyness_bucket'] = get_moneyness_buckets(df_analysis['moneyness'])
+        moneyness_analysis = df_analysis.groupby('moneyness_bucket').agg({
+            'abs_pct_error': 'mean',
+            'moneyness': 'count'
+        }).reset_index()
+        moneyness_analysis.columns = ['moneyness_bucket', 'mape', 'count']
+        
+        bars2 = ax2.bar(range(len(moneyness_analysis)), moneyness_analysis['mape'], 
+                       color='orange', alpha=0.8, edgecolor='black')
+        for i, (bar, count) in enumerate(zip(bars2, moneyness_analysis['count'])):
+            ax2.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 0.1,
+                    f'n={count:,}', ha='center', va='bottom', fontsize=8)
+        ax2.set_xticks(range(len(moneyness_analysis)))
+        ax2.set_xticklabels(moneyness_analysis['moneyness_bucket'])
+    else:
+        ax2.text(0.5, 0.5, 'Moneyness data not available', ha='center', va='center', 
+                transform=ax2.transAxes, fontsize=12)
+    ax2.set_title('MAPE by Moneyness', fontsize=14, fontweight='bold')
+    ax2.set_ylabel('Mean Absolute Percentage Error (%)', fontsize=12)
+    ax2.grid(True, alpha=0.3)
+    
+    # 3. MAPE by Time to Expiration
+    ax3 = axes[1, 0]
+    df_analysis['tte_bucket'] = get_time_buckets(df_analysis['days_to_maturity'] / 365.25)
+    tte_analysis = df_analysis.groupby('tte_bucket').agg({
+        'abs_pct_error': 'mean',
+        'days_to_maturity': 'count'
+    }).reset_index()
+    tte_analysis.columns = ['tte_bucket', 'mape', 'count']
+    
+    bars3 = ax3.bar(range(len(tte_analysis)), tte_analysis['mape'], 
+                   color='green', alpha=0.8, edgecolor='black')
+    for i, (bar, count) in enumerate(zip(bars3, tte_analysis['count'])):
+        ax3.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 0.1,
+                f'n={count:,}', ha='center', va='bottom', fontsize=8)
+    ax3.set_xticks(range(len(tte_analysis)))
+    ax3.set_xticklabels(tte_analysis['tte_bucket'])
+    ax3.set_title('MAPE by Time to Expiration', fontsize=14, fontweight='bold')
+    ax3.set_ylabel('Mean Absolute Percentage Error (%)', fontsize=12)
+    ax3.grid(True, alpha=0.3)
+    
+    # 4. MAPE by Historical Volatility
+    ax4 = axes[1, 1]
+    if 'historical_volatility' in df_analysis.columns:
+        vol_quantiles = pd.qcut(df_analysis['historical_volatility'], q=5, labels=False, duplicates='drop')
+        mape_by_vol = []
+        vol_labels = []
+        vol_counts = []
+        
+        unique_quantiles = sorted(vol_quantiles[~pd.isna(vol_quantiles)].unique())
+        for q in unique_quantiles:
+            mask = vol_quantiles == q
+            if mask.sum() > 0:
+                subset_vol = df_analysis[mask]['historical_volatility']
+                min_vol = subset_vol.min()
+                max_vol = subset_vol.max()
+                mape_by_vol.append(np.mean(df_analysis[mask]['abs_pct_error']))
+                vol_labels.append(f'{min_vol:.2f}-\n{max_vol:.2f}')
+                vol_counts.append(mask.sum())
+        
+        bars4 = ax4.bar(vol_labels, mape_by_vol, color='purple', alpha=0.8, edgecolor='black')
+        for i, (bar, count) in enumerate(zip(bars4, vol_counts)):
+            ax4.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 0.1,
+                    f'n={count:,}', ha='center', va='bottom', fontsize=8)
+    else:
+        ax4.text(0.5, 0.5, 'Historical volatility data not available', ha='center', va='center', 
+                transform=ax4.transAxes, fontsize=12)
+    ax4.set_title('MAPE by Historical Volatility', fontsize=14, fontweight='bold')
+    ax4.set_ylabel('Mean Absolute Percentage Error (%)', fontsize=12)
+    ax4.grid(True, alpha=0.3)
+    
+    # 5. MAPE by Volume (if available)
+    ax5 = axes[2, 0]
+    if 'volume' in df_analysis.columns:
+        df_analysis['volume_bucket'] = get_volume_buckets(df_analysis['volume'])
+        volume_analysis = df_analysis.groupby('volume_bucket').agg({
+            'abs_pct_error': 'mean',
+            'volume': 'count'
+        }).reset_index()
+        volume_analysis.columns = ['volume_bucket', 'mape', 'count']
+        
+        bars5 = ax5.bar(range(len(volume_analysis)), volume_analysis['mape'], 
+                       color='skyblue', alpha=0.8, edgecolor='black')
+        for i, (bar, count) in enumerate(zip(bars5, volume_analysis['count'])):
+            ax5.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 0.1,
+                    f'n={count:,}', ha='center', va='bottom', fontsize=8)
+        ax5.set_xticks(range(len(volume_analysis)))
+        ax5.set_xticklabels(volume_analysis['volume_bucket'], rotation=45, ha='right')
+    else:
+        ax5.text(0.5, 0.5, 'Volume data not available', ha='center', va='center', 
+                transform=ax5.transAxes, fontsize=12)
+    ax5.set_title('MAPE by Volume', fontsize=14, fontweight='bold')
+    ax5.set_ylabel('Mean Absolute Percentage Error (%)', fontsize=12)
+    ax5.grid(True, alpha=0.3)
+    
+    # 6. MAPE by Equity Uncertainty
+    ax6 = axes[2, 1]
+    if 'equity_uncertainty' in df_analysis.columns:
+        df_analysis['uncertainty_bucket'] = get_uncertainty_buckets(df_analysis['equity_uncertainty'])
+        uncertainty_analysis = df_analysis.groupby('uncertainty_bucket').agg({
+            'abs_pct_error': 'mean',
+            'equity_uncertainty': 'count'
+        }).reset_index()
+        uncertainty_analysis.columns = ['uncertainty_bucket', 'mape', 'count']
+        
+        create_bucket_bar_plot(ax6, uncertainty_analysis.set_index('uncertainty_bucket'), 
+                              'mape', 'count', 'MAPE by Equity Uncertainty', 
+                              'Mean Absolute Percentage Error (%)', 'red', rotation=45)
+    else:
+        ax6.text(0.5, 0.5, 'Equity uncertainty data not available', ha='center', va='center', 
+                transform=ax6.transAxes, fontsize=12)
+        ax6.set_title('MAPE by Equity Uncertainty', fontsize=14, fontweight='bold')
+        ax6.grid(True, alpha=0.3)
+    
+    plt.tight_layout(pad=3.0)
+    plt.savefig(os.path.join(results_dir, 'mape_by_features.png'), dpi=300, bbox_inches='tight')
+    plt.close()
+    print("MAPE by features analysis saved")
 
 def plot_normalized_error_histogram_ols(y_true, y_pred, df_test, results_dir):
     """Plot (pred-mid)/(half_spread) histogram"""
@@ -1037,7 +1372,8 @@ Sample Size: {len(filtered_error):,}
 Outliers Removed: {len(normalized_error) - len(filtered_error):,}"""
     
     plt.text(0.1, 0.9, stats_text, transform=plt.gca().transAxes,
-             fontsize=10, verticalalignment='top', fontfamily='monospace')
+             fontsize=10, verticalalignment='top', fontfamily='monospace',
+             bbox=dict(boxstyle='round,pad=0.5', facecolor='lightgray', alpha=0.3))
     
     # Box plot by price ranges
     plt.subplot(2, 2, 4)
@@ -1527,9 +1863,50 @@ FILES GENERATED:
 - ols_detailed_summary.txt (statsmodels output)
 - ols_robust_summary.txt (robust standard errors)
 
+"""
+    
+    # Add bucket analysis to the report
+    bucket_results = perform_bucket_analysis(df_test, results_dir)
+    
+    def format_analysis_table(analysis_df, title):
+        if analysis_df is None or analysis_df.empty:
+            return f"{title}:\nNo data available.\n\n"
+        
+        table_str = f"{title}:\n\n"
+        table_str += f"{'':25} {'Count':>10} {'MAE':>10} {'MAPE':>10} {'Median':>10} {'SD':>10}\n"
+        
+        for idx, row in analysis_df.iterrows():
+            bucket_name = str(idx)
+            count = int(row['Count'])
+            mae = row['MAE']
+            mape = row['MAPE']
+            median = row['Median']
+            sd = row['SD']
+            
+            table_str += f"{bucket_name:<25} {count:>10} {mae:>10.4f} {mape:>10.4f} {median:>10.4f} {sd:>10.4f}\n"
+        
+        table_str += "\n"
+        return table_str
+    
+    # Add bucket analyses to report
+    report_content += "\nBUCKET ANALYSIS:\n"
+    report_content += "=" * 50 + "\n\n"
+    
+    for analysis_name, analysis_df in bucket_results.items():
+        title_map = {
+            'moneyness': 'MONEYNESS ANALYSIS',
+            'time_to_expiration': 'Time to Expiration Analysis',
+            'volume': 'Volume Bucket Analysis',
+            'historical_volatility': 'Historical Volatility Bucket Analysis',
+            'price_range': 'Price Range Analysis',
+            'equity_uncertainty': 'Equity Uncertainty Analysis'
+        }
+        report_content += format_analysis_table(analysis_df, title_map.get(analysis_name, analysis_name.title()))
+    
+    report_content += f"""
 INTERPRETATION:
 {'=' * 20}
-This OLS regression analysis provides theoretical baseline performance for comparison with MLP models.
+This OLS regression analysis provides theoretical baseline performance for comparison with other models.
 The comprehensive statistical tests help validate model assumptions and identify potential issues.
 """
     
@@ -1575,7 +1952,6 @@ def train_ols_regression():
     n_samples = X_selected.shape[0]
     all_idx = np.arange(n_samples)
     
-    # Use exact MLP2 create_data_splits function
     X_train, X_val, X_test, y_train, y_val, y_test, train_idx, val_idx, test_idx = create_data_splits(
         X_selected, y, df_view, all_idx
     )
@@ -1624,7 +2000,8 @@ def train_ols_regression():
     plot_residuals_histograms(y_test, y_test_pred, results_dir)
     plot_residuals_histograms_frequency(y_test, y_test_pred, results_dir)
     plot_residuals_vs_features(y_test, y_test_pred, X_test, df_test, results_dir)
-    plot_error_by_features(y_test, y_test_pred, df_test, results_dir)
+    create_mae_analysis(y_test, y_test_pred, df_test, results_dir)
+    create_mape_analysis(y_test, y_test_pred, df_test, results_dir)
     plot_normalized_error_histogram_ols(y_test, y_test_pred, df_test, results_dir)
     
     # Generate comprehensive report
@@ -1639,7 +2016,6 @@ def train_ols_regression():
     print("OLS REGRESSION ANALYSIS COMPLETE")
     print("="*60)
     print(f"All results saved to: {results_dir}")
-    print(f"Ready for direct comparison with MLP model!")
 
 if __name__ == "__main__":
     train_ols_regression()
