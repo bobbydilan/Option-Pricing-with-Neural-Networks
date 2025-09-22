@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """
 MLP1 Hyperparameter Experiment Runner
 =====================================
