@@ -317,8 +317,10 @@ def match_dividend_data(options_df, dividend_df):
     options_work['days_to_maturity'] = (options_work['exdate'] - options_work['date']).dt.days
     options_work['orig_idx'] = options_work.index
     merged = options_work.merge(div_df, on='date', how='left')
-    merged['exp_diff'] = np.abs(merged['days_to_div_exp'] - merged['days_to_maturity'])
-    idx_min = merged.groupby('orig_idx')['exp_diff'].idxmin()
+    # Only consider dividend terms that do not exceed the option's time to maturity
+    merged = merged[merged['days_to_div_exp'] <= merged['days_to_maturity']]
+    # For each option (orig_idx), pick the dividend with the largest days_to_div_exp (closest but <= TTM)
+    idx_min = merged.groupby('orig_idx')['days_to_div_exp'].idxmax()
     result_df = options_work.copy()
     result_df['dividend_rate'] = np.nan
     if len(idx_min) > 0:
@@ -522,12 +524,30 @@ def match_dividend_data_loop(options_df, dividend_df):
     options_work['days_to_maturity'] = (options_work['exdate'] - options_work['date']).dt.days
     options_work['dividend_rate'] = np.nan
     
-    div_by_date = _group_aux_data_by_date(div_df, 'days_to_div_exp', 'rate')
+    # Group dividends by date for efficient lookup
+    div_by_date = {}
+    for _, row in div_df.iterrows():
+        d = row['date']
+        if d not in div_by_date:
+            div_by_date[d] = []
+        div_by_date[d].append((row['days_to_div_exp'], row['rate']))
     
-    def dividend_transform(rate):
-        return rate / 100.0  # Convert to decimal
+    matched_count = 0
+    total_options = len(options_work)
+    for idx, opt in options_work.iterrows():
+        if idx % 200000 == 0:
+            print(f"  Processed {idx:,}/{total_options:,} options ({idx/total_options*100:.1f}%)")
+        d = opt['date']
+        ttm = opt['days_to_maturity']
+        if d in div_by_date and div_by_date[d]:
+            # Filter dividends with maturity <= option TTM
+            candidates = [pair for pair in div_by_date[d] if pair[0] <= ttm]
+            if candidates:
+                # Choose the largest days_to_div_exp (closest but not exceeding)
+                best_days, best_rate = max(candidates, key=lambda x: x[0])
+                options_work.at[idx, 'dividend_rate'] = best_rate / 100.0
+                matched_count += 1
     
-    options_work, matched_count = _process_options_with_progress(options_work, div_by_date, 'dividend_rate', dividend_transform)
     print(f"Matched dividend rate for {matched_count:,} options")
     return options_work
 
@@ -554,7 +574,7 @@ def build_final_dataset(data_path=DATA_PATH):
     options_df = match_epu_index(options_df, raw_data['epu_index'])
     options_df = match_equity_uncertainty(options_df, raw_data['equity_uncertainty'])
     options_df = match_equity_volatility(options_df, raw_data['equity_volatility'])
-    options_df['moneyness'] = options_df['strike_price'] / options_df['spx_close']
+    options_df['moneyness'] = options_df['spx_close'] / options_df['strike_price']
     final_df = options_df.copy()
     
     # Final quality checks. Remove rows with negative risk-free rate or dividend rate
