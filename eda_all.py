@@ -21,6 +21,19 @@ PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 DATA_PATH = os.path.join(PROJECT_ROOT, "00Data")
 OUTPUT_DIR = os.path.join(os.path.dirname(__file__), "eda_all_figures")
 
+# Filtering configuration (matching MLP1 settings)
+APPLY_FILTERS = False  # Set to True to enable filtering
+ZERO_VOLUME_INCLUSION = 0.5
+FILTER_ITM_OPTIONS = True
+MIN_MONEYNESS = 0.5
+MAX_MONEYNESS = 1.5
+MONEYNESS_LOWER_BOUND = MIN_MONEYNESS
+MONEYNESS_UPPER_BOUND = MAX_MONEYNESS
+FILTER_SHORT_TERM = True
+MIN_DAYS_TO_MATURITY = 0
+MAX_DAYS_TO_MATURITY = 750
+FILTER_VALID_SPREAD = False
+
 figure_counter = 1
 
 def create_plot(title, filename, plot_func, data, figsize=(10, 6)):
@@ -45,6 +58,48 @@ def create_plot(title, filename, plot_func, data, figsize=(10, 6)):
     except Exception as e:
         print(f"[ERROR] Failed to create plot '{title}': {e}")
         plt.close()
+
+def apply_data_filters(df):
+    """Apply data quality filters matching MLP1 settings."""
+    if not APPLY_FILTERS:
+        return df
+    
+    print(f"[FILTER] Starting with {len(df):,} options")
+    original_count = len(df)
+    
+    # Zero volume filter
+    if ZERO_VOLUME_INCLUSION < 1.0:
+        zero_vol_mask = df['volume'] == 0
+        zero_vol_count = zero_vol_mask.sum()
+        keep_zero_vol = int(zero_vol_count * ZERO_VOLUME_INCLUSION)
+        
+        # Keep all non-zero volume + random sample of zero volume
+        non_zero_mask = ~zero_vol_mask
+        zero_vol_indices = df[zero_vol_mask].sample(n=keep_zero_vol, random_state=42).index
+        df = df[non_zero_mask | df.index.isin(zero_vol_indices)]
+        print(f"[FILTER] Zero volume: kept {keep_zero_vol:,} of {zero_vol_count:,} zero-volume options")
+    
+    # ITM options filter
+    if FILTER_ITM_OPTIONS and 'moneyness' in df.columns:
+        before = len(df)
+        df = df[(df['moneyness'] >= MONEYNESS_LOWER_BOUND) & (df['moneyness'] <= MONEYNESS_UPPER_BOUND)]
+        print(f"[FILTER] Moneyness [{MONEYNESS_LOWER_BOUND}, {MONEYNESS_UPPER_BOUND}]: {before:,} -> {len(df):,}")
+    
+    # Short-term filter
+    if FILTER_SHORT_TERM and 'days_to_maturity' in df.columns:
+        before = len(df)
+        df = df[(df['days_to_maturity'] >= MIN_DAYS_TO_MATURITY) & (df['days_to_maturity'] <= MAX_DAYS_TO_MATURITY)]
+        print(f"[FILTER] Days to maturity [{MIN_DAYS_TO_MATURITY}, {MAX_DAYS_TO_MATURITY}]: {before:,} -> {len(df):,}")
+    
+    # Valid spread filter
+    if FILTER_VALID_SPREAD and 'best_bid' in df.columns and 'best_offer' in df.columns:
+        before = len(df)
+        spread = df['best_offer'] - df['best_bid']
+        df = df[spread >= 0]
+        print(f"[FILTER] Valid spreads: {before:,} -> {len(df):,}")
+    
+    print(f"[FILTER] Final dataset: {len(df):,} options ({len(df)/original_count*100:.1f}% of original)")
+    return df
 
 def export_data_range_diagnostics(df, target_column='mid_price', output_dir=OUTPUT_DIR):
 
@@ -96,7 +151,7 @@ def export_data_range_diagnostics(df, target_column='mid_price', output_dir=OUTP
             
             # Additional features if available
             if 'strike_price' in df.columns:
-                f.write("STRIKE PRICE STATISTICS PER 100 OPTIONS\n")
+                f.write("STRIKE PRICE STATISTICS PER 1000 OPTIONS\n")
                 f.write("-" * 40 + "\n")
                 f.write(f"Strike Price Range: ${df['strike_price'].min():.2f} - ${df['strike_price'].max():.2f}\n")
                 f.write(f"Strike Price Mean: ${df['strike_price'].mean():.2f}\n")
@@ -298,11 +353,22 @@ def main():
     # Ensure non-interactive mode
     plt.ioff()
     
+    # Determine output directory based on filtering
+    global OUTPUT_DIR
+    if APPLY_FILTERS:
+        OUTPUT_DIR = os.path.join(os.path.dirname(__file__), "eda_all_figures_post_filtering")
+        print('--- STARTING EDA (WITH FILTERS) ---')
+        print(f"[CONFIG] Filters: Zero Volume={ZERO_VOLUME_INCLUSION}, ITM={FILTER_ITM_OPTIONS}, "
+              f"Moneyness=[{MONEYNESS_LOWER_BOUND}, {MONEYNESS_UPPER_BOUND}], "
+              f"Days=[{MIN_DAYS_TO_MATURITY}, {MAX_DAYS_TO_MATURITY}], Valid Spread={FILTER_VALID_SPREAD}")
+    else:
+        print('--- STARTING EDA (NO FILTERS) ---')
+    
     # Create output directory
     if not os.path.exists(OUTPUT_DIR):
         os.makedirs(OUTPUT_DIR)
     
-    print('--- STARTING EDA ---')
+    print(f"Output directory: {OUTPUT_DIR}")
     
     options = None
     
@@ -331,6 +397,11 @@ def main():
             options['mid_price'] = (options['best_bid'] + options['best_offer']) / 2
             print("Calculated mid_price")
         
+        # Apply filters if enabled
+        if APPLY_FILTERS:
+            print("\n=== APPLYING DATA FILTERS ===")
+            options = apply_data_filters(options)
+        
         # Export data range diagnostics
         print("\n=== EXPORTING DATA RANGE DIAGNOSTICS ===")
         export_data_range_diagnostics(options, target_column='mid_price')
@@ -340,7 +411,7 @@ def main():
         print("Skipping raw data plots...")
     
     # --- 2. RAW DATA PLOTS ---
-    if options is not None:
+    if options is not None and not APPLY_FILTERS:
         print("\n=== CREATING RAW DATA PLOTS ===")
         
         # Plot 1: 3D Implied Volatility Surface
@@ -526,6 +597,12 @@ def main():
         df['date'] = pd.to_datetime(df['date'])
         df['exdate'] = pd.to_datetime(df['exdate'])
         print("Final dataset loaded successfully")
+        
+        # Apply filters if enabled
+        if APPLY_FILTERS:
+            print("\n=== APPLYING DATA FILTERS TO FINAL DATASET ===")
+            df = apply_data_filters(df)
+            
     except FileNotFoundError:
         print("[ERROR] 'final_options_dataset.csv' not found. Cannot proceed with final plots.")
         return
@@ -546,7 +623,9 @@ def main():
     
     # Plot 5: Days to Maturity Distribution
     def plot_dtm_dist(data):
-        sns.histplot(data['days_to_maturity'], bins=50, color='salmon')
+        # Constrain to [0, 750] days
+        sns.histplot(data['days_to_maturity'].clip(lower=0, upper=750), bins=50, color='salmon')
+        plt.xlim(0, 750)
         plt.xlabel('Days to Maturity')
         plt.ylabel('Frequency')
     
@@ -554,7 +633,9 @@ def main():
     
     # Plot 6: Mid Price Distribution
     def plot_mid_price_dist(data):
-        sns.histplot(data['mid_price'], bins=50, color='lightgreen')
+        # Constrain to [0, 1600]
+        sns.histplot(data['mid_price'].clip(lower=0, upper=1600), bins=50, color='lightgreen')
+        plt.xlim(0, 1600)
         plt.xlabel('Mid Price')
         plt.ylabel('Frequency')
     
@@ -570,7 +651,9 @@ def main():
     
     # Plot 8: Historical Volatility Distribution
     def plot_hist_vol_dist(data):
-        sns.histplot(data['historical_volatility'], bins=50, color='gold')
+        # Constrain to [0, 0.35]
+        sns.histplot(data['historical_volatility'].clip(lower=0, upper=0.35), bins=50, color='gold')
+        plt.xlim(0, 0.35)
         plt.xlabel('Historical Volatility')
         plt.ylabel('Frequency')
     
@@ -578,7 +661,9 @@ def main():
     
     # Plot 9: Moneyness Distribution
     def plot_moneyness_dist(data):
-        sns.histplot(data['moneyness'], bins=50, color='orange')
+        # Constrain to [0, 3.0]
+        sns.histplot(data['moneyness'].clip(lower=0, upper=3.0), bins=50, color='orange')
+        plt.xlim(0, 3.0)
         plt.xlabel('Moneyness (S/K)')
         plt.ylabel('Frequency')
     
@@ -693,7 +778,9 @@ def main():
             print("[WARN] No valid dividend rate data")
             return
             
-        sns.histplot(dividend_data, bins=50, color='green', alpha=0.7)
+        # Constrain to [0, 0.1]
+        sns.histplot(dividend_data.clip(lower=0, upper=0.1), bins=50, color='green', alpha=0.7)
+        plt.xlim(0, 0.1)
         plt.xlabel('Dividend Rate')
         plt.ylabel('Frequency')
     
@@ -761,7 +848,16 @@ def main():
                 if len(vals) == 0:
                     ax.text(0.5, 0.5, f'No data for {label}', ha='center', va='center', transform=ax.transAxes)
                 else:
+                    # Apply requested cut-offs for specific series
+                    if col == 'equity_uncertainty':
+                        vals = vals.clip(lower=0, upper=200)
+                    if col == 'equity_volatility':
+                        vals = vals.clip(lower=0, upper=3)
                     sns.histplot(vals, bins=50, ax=ax, color=['tab:blue','tab:orange','tab:green'][i], alpha=0.7)
+                    if col == 'equity_uncertainty':
+                        ax.set_xlim(0, 200)
+                    if col == 'equity_volatility':
+                        ax.set_xlim(0, 3)
                     ax.set_xlabel(label)
                     ax.set_ylabel('Frequency')
                     ax.grid(True, alpha=0.2)
@@ -770,6 +866,196 @@ def main():
         plt.tight_layout()
     
     create_plot('Economic Indices Distributions (EPU, Uncertainty, Equity Volatility)', 'economic_indices_distributions.png', plot_economic_indices_distributions, df, figsize=(12, 12))
+    
+    # Plot 19: Mid Price vs Key Variables
+    def plot_mid_price_vs_variables(data):
+        # Define variables to plot against mid price
+        variables = [
+            ('strike_price', 'Strike Price', 'blue'),
+            ('spx_close', 'SPX Close', 'green'),
+            ('days_to_maturity', 'Days to Maturity', 'red'),
+            ('volume', 'Volume', 'purple'),
+            ('historical_volatility', 'Historical Volatility', 'orange'),
+            ('moneyness', 'Moneyness (S/K)', 'brown'),
+            ('risk_free_rate', 'Risk Free Rate', 'pink'),
+            ('dividend_rate', 'Dividend Rate', 'gray')
+        ]
+        
+        # Filter variables that exist in the data
+        available_vars = [(var, label, color) for var, label, color in variables if var in data.columns]
+        
+        if not available_vars:
+            print("[WARN] No variables available for mid price analysis")
+            return
+        
+        # Create subplots
+        n_vars = len(available_vars)
+        n_cols = 3
+        n_rows = (n_vars + n_cols - 1) // n_cols
+        
+        fig, axes = plt.subplots(n_rows, n_cols, figsize=(15, 5 * n_rows))
+        if n_rows == 1:
+            axes = axes.reshape(1, -1)
+        axes = axes.flatten()
+        
+        for i, (var, label, color) in enumerate(available_vars):
+            ax = axes[i]
+            
+            # Clean data
+            if var in ['spx_close', 'moneyness'] and 'days_to_maturity' in data.columns:
+                plot_data = data[[var, 'mid_price', 'days_to_maturity']].dropna()
+            else:
+                plot_data = data[[var, 'mid_price']].dropna()
+                
+            if plot_data.empty:
+                ax.text(0.5, 0.5, f'No data for {label}', ha='center', va='center', transform=ax.transAxes)
+                continue
+            
+            # Apply reasonable limits for better visualization
+            if var == 'volume':
+                plot_data = plot_data[plot_data['volume'] <= plot_data['volume'].quantile(0.95)]
+            elif var == 'days_to_maturity':
+                plot_data = plot_data[plot_data['days_to_maturity'] <= 750]
+            
+            plot_data = plot_data[plot_data['mid_price'] <= plot_data['mid_price'].quantile(0.95)]
+            
+            # Different plotting strategies based on variable
+            if var in ['spx_close', 'moneyness']:
+                # Scatter plot with color bar based on days to maturity
+                scatter = ax.scatter(plot_data[var], plot_data['mid_price'], 
+                                   c=plot_data['days_to_maturity'], cmap='viridis', 
+                                   alpha=0.6, s=1)
+                cbar = plt.colorbar(scatter, ax=ax)
+                cbar.set_label('Days to Maturity')
+                
+            elif var in ['strike_price', 'days_to_maturity', 'volume', 'historical_volatility', 'risk_free_rate', 'dividend_rate']:
+                # Average mid price for small bins
+                bin_width = 0.0001 if var in ['risk_free_rate', 'dividend_rate'] else None
+                
+                if var == 'strike_price':
+                    bin_width = 1.0  # $1 bins for strike price
+                elif var == 'days_to_maturity':
+                    bin_width = 1.0  # 1 day bins
+                elif var == 'volume':
+                    bin_width = 10.0  # 10 volume bins
+                elif var == 'historical_volatility':
+                    bin_width = 0.001  # 0.1% volatility bins
+                
+                # Create bins and calculate averages
+                x_vals = plot_data[var]
+                y_vals = plot_data['mid_price']
+                
+                if bin_width:
+                    bins = np.arange(x_vals.min(), x_vals.max() + bin_width, bin_width)
+                    bin_indices = np.digitize(x_vals, bins)
+                    
+                    avg_x = []
+                    avg_y = []
+                    
+                    for bin_idx in np.unique(bin_indices):
+                        mask = bin_indices == bin_idx
+                        if mask.sum() > 0:
+                            avg_x.append(x_vals[mask].mean())
+                            avg_y.append(y_vals[mask].mean())
+                    
+                    if avg_x and avg_y:
+                        ax.plot(avg_x, avg_y, 'o-', color=color, markersize=2, linewidth=1)
+                else:
+                    # Fallback to scatter if binning fails
+                    ax.scatter(x_vals, y_vals, alpha=0.3, s=1, color=color)
+            else:
+                # Default scatter plot
+                ax.scatter(plot_data[var], plot_data['mid_price'], alpha=0.3, s=1, color=color)
+            
+            ax.set_xlabel(label)
+            ax.set_ylabel('Mid Price')
+            ax.set_title(f'Mid Price vs {label}')
+            ax.grid(True, alpha=0.3)
+        
+        # Hide unused subplots
+        for i in range(len(available_vars), len(axes)):
+            axes[i].set_visible(False)
+        
+        plt.tight_layout()
+    
+    create_plot('Mid Price vs Key Variables', 'mid_price_vs_variables.png', plot_mid_price_vs_variables, df, figsize=(15, 12))
+    
+    # Plot 20: Mid Price vs Economic Indicators
+    def plot_mid_price_vs_economic(data):
+        econ_vars = [
+            ('epu_index', 'EPU Index', 'blue'),
+            ('equity_uncertainty', 'Equity Uncertainty', 'red'),
+            ('equity_volatility', 'Equity Volatility', 'green')
+        ]
+        
+        available_econ = [(var, label, color) for var, label, color in econ_vars if var in data.columns]
+        
+        if not available_econ:
+            print("[WARN] No economic variables available for mid price analysis")
+            return
+        
+        fig, axes = plt.subplots(1, len(available_econ), figsize=(5 * len(available_econ), 5))
+        if len(available_econ) == 1:
+            axes = [axes]
+        
+        for i, (var, label, color) in enumerate(available_econ):
+            ax = axes[i]
+            
+            # Clean data
+            plot_data = data[[var, 'mid_price']].dropna()
+            if plot_data.empty:
+                ax.text(0.5, 0.5, f'No data for {label}', ha='center', va='center', transform=ax.transAxes)
+                continue
+            
+            # Apply limits for better visualization
+            if var == 'equity_uncertainty':
+                plot_data = plot_data[plot_data[var] <= 200]
+            elif var == 'equity_volatility':
+                plot_data = plot_data[plot_data[var] <= 3]
+            
+            plot_data = plot_data[plot_data['mid_price'] <= plot_data['mid_price'].quantile(0.95)]
+            
+            # Calculate averages for small bins (economic indicators)
+            x_vals = plot_data[var]
+            y_vals = plot_data['mid_price']
+            
+            # Use appropriate bin width for each economic indicator
+            if var == 'epu_index':
+                bin_width = 1.0  # 1 unit bins for EPU
+            elif var == 'equity_uncertainty':
+                bin_width = 0.5  # 0.5 unit bins for uncertainty
+            elif var == 'equity_volatility':
+                bin_width = 0.01  # 0.01 unit bins for volatility
+            else:
+                bin_width = 0.1  # default
+            
+            # Create bins and calculate averages
+            bins = np.arange(x_vals.min(), x_vals.max() + bin_width, bin_width)
+            bin_indices = np.digitize(x_vals, bins)
+            
+            avg_x = []
+            avg_y = []
+            
+            for bin_idx in np.unique(bin_indices):
+                mask = bin_indices == bin_idx
+                if mask.sum() > 0:
+                    avg_x.append(x_vals[mask].mean())
+                    avg_y.append(y_vals[mask].mean())
+            
+            if avg_x and avg_y:
+                ax.plot(avg_x, avg_y, 'o-', color=color, markersize=3, linewidth=2)
+            else:
+                # Fallback to scatter if binning fails
+                ax.scatter(x_vals, y_vals, alpha=0.3, s=1, color=color)
+            
+            ax.set_xlabel(label)
+            ax.set_ylabel('Mid Price')
+            ax.set_title(f'Average Mid Price vs {label}')
+            ax.grid(True, alpha=0.3)
+        
+        plt.tight_layout()
+    
+    create_plot('Mid Price vs Economic Indicators', 'mid_price_vs_economic.png', plot_mid_price_vs_economic, df, figsize=(15, 5))
     
     print('\n--- EDA COMPLETE ---')
     print(f'All figures saved to: {OUTPUT_DIR}')
