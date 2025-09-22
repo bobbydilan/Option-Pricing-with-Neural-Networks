@@ -1,0 +1,437 @@
+#!/usr/bin/env python3
+"""
+MLP1 Hyperparameter Experiment Runner
+=====================================
+
+Automated hyperparameter optimization for Multi-Layer Perceptron option pricing models.
+Systematically evaluates different combinations of:
+- Feature modes (core_only, selected_features, all_features, simplified variants)
+- Network architectures (small, medium, large, custom)
+- Learning rates and weight decay parameters
+- Batch sizes
+
+Author: Federico Galli
+Institution: Bocconi University
+Thesis: Enhancing Black–Scholes Option Pricing Accuracy with Neural Networks
+"""
+
+import os
+import sys
+import subprocess
+import pandas as pd
+import json
+from datetime import datetime
+from itertools import product
+import shutil
+
+# Experiment configuration - modify these parameters for different experimental setups
+EXPERIMENTS = {
+    'FEATURE_MODE': [
+        # 'core_only',                 # Black-Scholes features only
+        # 'selected_features',         # Core + selected additional features
+        # 'all_features',              # Core + all additional features
+        # 'simplified_only',           # Simplified feature set (√T, log-moneyness, volatility)
+        'simplified_plus_selected',  # Simplified + selected features
+        # 'simplified_plus_all'        # Simplified + all features
+    ],
+
+    'ARCHITECTURE_NAME': [
+    #    'small',               # [64, 32] - balanced architecture
+        'large',                # [128, 128, 128] - deeper uniform architecture
+        'custom'                # [128, 64, 32] - custom configuration
+    ],
+
+    'LEARNING_RATE': [
+        2e-4,                  # Standard learning rate
+        3e-4,                  # Moderate learning rate
+        4e-4,                  # Aggressive learning rate
+        5e-4                   # Very aggressive learning rate
+        ],
+
+    'WEIGHT_DECAY': [
+        1e-4,                  # Light regularization
+        2e-4,                  # Standard regularization
+        3e-4,                  # Strong regularization
+        4e-4,                  # Very strong regularization
+        5e-4                   # Very strong regularization
+    ],
+
+    'BATCH_SIZE': [
+        512,                   # Standard batch size for option pricing
+    ]
+}
+# next try with different selected features
+
+# 1e-4,                  # Conservative learning rate
+'''
+        2e-4,                  # Standard learning rate
+        3e-4,                  # Moderate learning rate
+        4e-4,                  # Aggressive learning rate
+        5e-4                   # Very aggressive learning rate
+'''
+# Base directory
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+MLP1_SCRIPT = os.path.join(BASE_DIR, 'MLP1.py')
+RESULTS_DIR = os.path.join(BASE_DIR, 'experiment_results')
+
+def create_experiment_name(feature_mode, arch_name, lr, wd, batch_size):
+    """Create descriptive experiment name for tracking and identification.
+    
+    Args:
+        feature_mode: Feature set configuration (e.g., 'core_only', 'all_features')
+        arch_name: Neural network architecture name (e.g., 'medium', 'large')
+        lr: Learning rate value
+        wd: Weight decay value
+        batch_size: Training batch size
+        
+    Returns:
+        Formatted string identifier for the experiment
+    """
+    return f"{feature_mode}_{arch_name}_lr{lr:.0e}_wd{wd:.0e}_bs{batch_size}"
+
+def backup_original_mlp1():
+    """Create backup of original MLP1.py configuration before modifications.
+    
+    This ensures we can restore the original state after experiments complete,
+    preventing configuration drift between experiment runs.
+    """
+    backup_path = os.path.join(BASE_DIR, 'MLP1_original_backup.py')
+    if not os.path.exists(backup_path):
+        shutil.copy2(MLP1_SCRIPT, backup_path)
+        print(f"✓ Backed up original MLP1.py to {backup_path}")
+    else:
+        print(f"✓ Backup already exists: {backup_path}")
+
+def modify_mlp1_config(feature_mode, arch_name, lr, wd, batch_size):
+    """Modify MLP1.py configuration parameters for current experiment.
+    
+    Updates the main configuration file with experiment-specific parameters
+    while preserving the overall structure and other settings.
+    
+    Args:
+        feature_mode: Feature set to use ('core_only', 'selected_features', etc.)
+        arch_name: Architecture name ('small', 'medium', 'large', 'custom')
+        lr: Learning rate value
+        wd: Weight decay value  
+        batch_size: Training batch size
+        
+    Raises:
+        IOError: If unable to read/write configuration file
+    """
+    with open(MLP1_SCRIPT, 'r') as f:
+        content = f.read()
+    
+    # Replace configuration values
+    lines = content.split('\n')
+    modified_lines = []
+    i = 0
+    
+    while i < len(lines):
+        line = lines[i]
+        
+        if line.startswith('FEATURE_MODE ='):
+            modified_lines.append(f"FEATURE_MODE = '{feature_mode}'               # Auto-generated by experiment runner")
+        elif line.startswith('ARCHITECTURE_NAME ='):
+            modified_lines.append(f"ARCHITECTURE_NAME = '{arch_name}'             # Auto-generated by experiment runner")
+        elif line.startswith('LEARNING_RATE ='):
+            modified_lines.append(f"LEARNING_RATE = {lr}                # Auto-generated by experiment runner")
+        elif line.startswith('WEIGHT_DECAY ='):
+            modified_lines.append(f"WEIGHT_DECAY = {wd}                 # Auto-generated by experiment runner")
+        elif line.startswith('BATCH_SIZE ='):
+            modified_lines.append(f"BATCH_SIZE = {batch_size}                # Auto-generated by experiment runner")
+        elif line.startswith('SELECTED_FEATURES ='):
+            # Skip the entire SELECTED_FEATURES block - don't modify it at all
+            # This prevents indentation issues
+            modified_lines.append(line)
+            i += 1
+            while i < len(lines):
+                modified_lines.append(lines[i])
+                if lines[i].strip().endswith(']') and not lines[i].strip().startswith('#'):
+                    break
+                i += 1
+        else:
+            modified_lines.append(line)
+        
+        i += 1
+    
+    # Write modified content
+    with open(MLP1_SCRIPT, 'w') as f:
+        f.write('\n'.join(modified_lines))
+
+def restore_original_mlp1():
+    """Restore the original MLP1.py configuration from backup.
+    
+    This function is called after all experiments complete to ensure
+    the main configuration file is returned to its original state.
+    
+    Raises:
+        FileNotFoundError: If backup file doesn't exist
+        IOError: If unable to restore from backup
+    """
+    backup_path = os.path.join(BASE_DIR, 'MLP1_original_backup.py')
+    if os.path.exists(backup_path):
+        shutil.copy2(backup_path, MLP1_SCRIPT)
+        print("✓ Restored original MLP1.py configuration")
+    else:
+        print("⚠️  Warning: Backup file not found, cannot restore original configuration")
+
+def run_single_experiment(feature_mode, arch_name, lr, wd, batch_size, exp_num, total_exp):
+    """Execute a single experiment with specified hyperparameters.
+    
+    Args:
+        feature_mode: Feature set configuration
+        arch_name: Neural network architecture
+        lr: Learning rate
+        wd: Weight decay
+        batch_size: Training batch size
+        exp_num: Current experiment number
+        total_exp: Total number of experiments
+        
+    Returns:
+        Dictionary containing experiment results and metrics
+    """
+    exp_name = create_experiment_name(feature_mode, arch_name, lr, wd, batch_size)
+    print(f"[{exp_num}/{total_exp}] Running: {exp_name}")
+    
+    try:
+        # Update configuration for this experiment
+        modify_mlp1_config(feature_mode, arch_name, lr, wd, batch_size)
+        
+        # Execute MLP1 training
+        result = subprocess.run([
+            sys.executable, MLP1_SCRIPT
+        ], capture_output=True, text=True, cwd=BASE_DIR, timeout=3600)  # 1 hour timeout
+        
+        if result.returncode == 0:
+            print(f"✓ [{exp_num}/{total_exp}] Completed successfully")
+            return parse_results(result.stdout, exp_name, feature_mode, arch_name, lr, wd, batch_size)
+        else:
+            print(f"✗ [{exp_num}/{total_exp}] Failed with error")
+            return create_failed_result(exp_name, feature_mode, arch_name, lr, wd, batch_size, result.stderr)
+            
+    except subprocess.TimeoutExpired:
+        print(f"✗ [{exp_num}/{total_exp}] Timeout after 1 hour")
+        return create_failed_result(exp_name, feature_mode, arch_name, lr, wd, batch_size, "Timeout after 1 hour")
+    except Exception as e:
+        print(f"✗ [{exp_num}/{total_exp}] Exception: {str(e)[:100]}...")
+        return create_failed_result(exp_name, feature_mode, arch_name, lr, wd, batch_size, str(e))
+
+def parse_results(stdout, exp_name, feature_mode, arch_name, lr, wd, batch_size):
+    """Parse performance metrics from MLP1 training output.
+    
+    Extracts key performance indicators from the training log including
+    MAE, RMSE, R², training epochs, and validation loss.
+    
+    Args:
+        stdout: Training output text from MLP1 execution
+        exp_name: Experiment identifier
+        feature_mode: Feature set used
+        arch_name: Architecture name
+        lr: Learning rate
+        wd: Weight decay
+        batch_size: Batch size
+        
+    Returns:
+        Dictionary containing parsed metrics and experiment metadata
+    """
+    result = {
+        'experiment_name': exp_name,
+        'feature_mode': feature_mode,
+        'architecture': arch_name,
+        'learning_rate': lr,
+        'weight_decay': wd,
+        'batch_size': batch_size,
+        'status': 'success',
+        'timestamp': datetime.now().isoformat()
+    }
+    
+    # Extract key metrics from stdout
+    lines = stdout.split('\n')
+    for line in lines:
+        if 'Mean Absolute Error:' in line:
+            try:
+                mae = float(line.split('$')[1])
+                result['mae'] = mae
+            except:
+                pass
+        elif 'Root Mean Squared Error:' in line:
+            try:
+                rmse = float(line.split('$')[1])
+                result['rmse'] = rmse
+            except:
+                pass
+        elif 'R² (Test)' in line:
+            try:
+                r2 = float(line.split(':')[1].strip())
+                result['r2_test'] = r2
+            except:
+                pass
+        elif 'Final epoch:' in line:
+            try:
+                epochs = int(line.split(':')[1].strip())
+                result['final_epoch'] = epochs
+            except:
+                pass
+        elif 'Best validation loss:' in line:
+            try:
+                val_loss = float(line.split(':')[1].strip())
+                result['best_val_loss'] = val_loss
+            except:
+                pass
+        elif 'Model parameters:' in line:
+            try:
+                params = line.split(':')[1].split(',')[0].strip().split()[0]
+                result['model_parameters'] = int(params.replace(',', ''))
+            except:
+                pass
+    
+    return result
+
+def create_failed_result(exp_name, feature_mode, arch_name, lr, wd, batch_size, error_msg):
+    """Create result entry for failed experiment."""
+    return {
+        'experiment_name': exp_name,
+        'feature_mode': feature_mode,
+        'architecture': arch_name,
+        'learning_rate': lr,
+        'weight_decay': wd,
+        'batch_size': batch_size,
+        'status': 'failed',
+        'error_message': error_msg,
+        'timestamp': datetime.now().isoformat(),
+        'mae': None,
+        'r2_test': None,
+        'final_epoch': None,
+        'best_val_loss': None,
+        'model_parameters': None
+    }
+
+def save_results_summary(results):
+    """Print experiment results as a simple table to console."""
+    # Print header
+    print("\nEXPERIMENT RESULTS TABLE")
+    print("=" * 80)
+    
+    # Table header
+    print(f"{'Architecture':<12} {'Learning Rate':<13} {'Weight Decay':<12} {'MAE':<8} {'RMSE':<8} {'R²':<8} {'Status':<8}")
+    print("-" * 80)
+    
+    # Table rows
+    for result in results:
+        arch = result['architecture']
+        lr = f"{result['learning_rate']:.0e}"
+        wd = f"{result['weight_decay']:.0e}"
+        
+        if result['status'] == 'success':
+            mae = f"${result.get('mae', 0):.2f}" if result.get('mae') is not None else "N/A"
+            rmse = f"${result.get('rmse', 0):.2f}" if result.get('rmse') is not None else "N/A"
+            r2 = f"{result.get('r2_test', 0):.4f}" if result.get('r2_test') is not None else "N/A"
+            status = "SUCCESS"
+        else:
+            mae = "FAILED"
+            rmse = "FAILED"
+            r2 = "FAILED"
+            status = "FAILED"
+        
+        print(f"{arch:<12} {lr:<13} {wd:<12} {mae:<8} {rmse:<8} {r2:<8} {status:<8}")
+    
+    print("-" * 80)
+    
+    # Summary
+    successful = len([r for r in results if r['status'] == 'success'])
+    failed = len([r for r in results if r['status'] == 'failed'])
+    print(f"\nSUMMARY: {successful} successful, {failed} failed out of {len(results)} total experiments")
+    
+    # Best performer
+    successful_results = [r for r in results if r['status'] == 'success' and r.get('mae') is not None]
+    if successful_results:
+        best = min(successful_results, key=lambda x: x['mae'])
+        print(f"\nBEST PERFORMER (lowest MAE):")
+        print(f"Architecture: {best['architecture']}, LR: {best['learning_rate']:.0e}, WD: {best['weight_decay']:.0e}")
+        print(f"MAE: ${best['mae']:.2f}, RMSE: ${best.get('rmse', 0):.2f}, R²: {best.get('r2_test', 0):.4f}")
+
+def main():
+    """Main experiment orchestration function.
+    
+    Coordinates the execution of all hyperparameter combinations,
+    manages configuration backups, and handles graceful cleanup.
+    """
+    # Calculate and display experiment scope
+    total_experiments = 1
+    for param_values in EXPERIMENTS.values():
+        total_experiments *= len(param_values)
+    
+    print("=" * 80)
+    print("MLP1 HYPERPARAMETER OPTIMIZATION SUITE")
+    print("=" * 80)
+    print(f"Total experiments scheduled: {total_experiments}")
+    print(f"Feature modes: {len(EXPERIMENTS['FEATURE_MODE'])}")
+    print(f"Architectures: {len(EXPERIMENTS['ARCHITECTURE_NAME'])}")
+    print(f"Learning rates: {len(EXPERIMENTS['LEARNING_RATE'])}")
+    print(f"Weight decay values: {len(EXPERIMENTS['WEIGHT_DECAY'])}")
+    print(f"Estimated runtime: {total_experiments * 0.5:.1f}-{total_experiments * 1.5:.1f} hours")
+    print("=" * 80)
+    
+    # Create backup before starting
+    backup_original_mlp1()
+    
+    # Generate all parameter combinations
+    param_combinations = list(product(
+        EXPERIMENTS['FEATURE_MODE'],
+        EXPERIMENTS['ARCHITECTURE_NAME'], 
+        EXPERIMENTS['LEARNING_RATE'],
+        EXPERIMENTS['WEIGHT_DECAY'],
+        EXPERIMENTS['BATCH_SIZE']
+    ))
+    
+    results = []
+    start_time = datetime.now()
+    
+    try:
+        # Execute all experiments
+        for i, (feature_mode, arch_name, lr, wd, batch_size) in enumerate(param_combinations, 1):
+            result = run_single_experiment(
+                feature_mode, arch_name, lr, wd, batch_size, i, total_experiments
+            )
+            results.append(result)
+            
+            # Display intermediate results every 5 experiments or at end
+            if i % 5 == 0 or i == total_experiments:
+                print(f"\n--- INTERMEDIATE RESULTS ({i}/{total_experiments}) ---")
+                save_results_summary(results[-5:] if i >= 5 else results)
+                print("-" * 50)
+    
+    except KeyboardInterrupt:
+        print("\n\n⚠️  Experiment suite interrupted by user")
+        print("Partial results will be displayed below.")
+    
+    finally:
+        # Always restore original configuration
+        restore_original_mlp1()
+        
+        # Display final comprehensive results
+        if results:
+            end_time = datetime.now()
+            duration = end_time - start_time
+            
+            print("\n" + "=" * 80)
+            print("FINAL EXPERIMENT RESULTS")
+            print("=" * 80)
+            print(f"Total runtime: {duration}")
+            print(f"Average time per experiment: {duration.total_seconds() / len(results):.1f} seconds")
+            
+            save_results_summary(results)
+            
+            # Summary statistics
+            successful = len([r for r in results if r['status'] == 'success'])
+            failed = len([r for r in results if r['status'] == 'failed'])
+            
+            print(f"\nEXPERIMENT SUMMARY:")
+            print(f"  Completed: {len(results)}/{total_experiments}")
+            print(f"  Successful: {successful}")
+            print(f"  Failed: {failed}")
+            print(f"  Success rate: {successful/len(results)*100:.1f}%")
+            print("=" * 80)
+
+if __name__ == "__main__":
+    main()
