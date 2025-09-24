@@ -4,6 +4,8 @@ import matplotlib.pyplot as plt
 from matplotlib.lines import Line2D
 from scipy.stats import norm
 from pathlib import Path
+import sys
+from typing import List
  
 # Suppress only specific warnings we know are safe
 import warnings
@@ -18,12 +20,16 @@ class IVAnalyzer:
         self._setup_plotting_style()
         
     def _get_latest_run_name(self):
-        """Return the latest run_YYYYMMDD_HHMMSS folder name"""
-        base_results = Path(__file__).parent / 'results'
+        """Return the latest run_YYYYMMDD_HHMMSS folder name (by mod time)"""
+        base_results = self._base_input_results_dir()
         if not base_results.exists():
             return None
         run_dirs = [p for p in base_results.iterdir() if p.is_dir() and p.name.startswith('run_')]
-        return sorted(run_dirs, key=lambda p: p.name, reverse=True)[0].name if run_dirs else None
+        if not run_dirs:
+            return None
+        # Sort by modification time (newest first)
+        run_dirs.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+        return run_dirs[0].name
 
     def _setup_plotting_style(self):
         """Configure matplotlib style once"""
@@ -33,10 +39,90 @@ class IVAnalyzer:
             'axes.edgecolor': 'black', 'axes.linewidth': 0.5, 'figure.figsize': (12, 8), 'font.size': 12
         })
 
+    @staticmethod
+    def _ensure_parent(path: Path):
+        path.parent.mkdir(parents=True, exist_ok=True)
+
     def _results_dir(self):
-        """Centralized results directory logic"""
-        base = Path(__file__).parent / 'results'
-        return base / self.run_name if self.run_name else base
+        """Centralized *output* directory logic (now under vol_results/<run_name>)"""
+        base = Path(__file__).parent / 'vol_results'
+        run = self.run_name or 'unknown_run'
+        out_dir = base / run
+        out_dir.mkdir(parents=True, exist_ok=True)
+        return out_dir
+
+    @staticmethod
+    def _base_input_results_dir() -> Path:
+        return Path(__file__).parent / 'results'
+
+    @classmethod
+    def discover_run_names(cls) -> List[str]:
+        base_results = cls._base_input_results_dir()
+        if not base_results.exists():
+            return []
+        runs = [p.name for p in base_results.iterdir() if p.is_dir() and p.name.lower().startswith('run_mlp')]
+        # include nested run folders too
+        for sub in base_results.iterdir():
+            if sub.is_dir() and not sub.name.lower().startswith('run_mlp'):
+                for p in sub.rglob('run_MLP*'):
+                    if p.is_dir():
+                        runs.append(p.name)
+        # de-duplicate while preserving order
+        seen = set()
+        uniq = []
+        for r in runs:
+            if r not in seen:
+                uniq.append(r)
+                seen.add(r)
+        return sorted(uniq)
+
+    def _resolve_predictions_path(self) -> Path:
+        """Robustly resolve the predictions CSV path.
+        Priority:
+        1) If self.run_name is set and results/<run_name>/mlp_predictions.csv exists, use it
+        2) If self.run_name is set and results/<run_name> exists, try common alternate filenames
+        3) Otherwise search recursively under results/ for the most recently modified mlp_predictions.csv
+        4) As a last resort, search for any *.csv in results/** and pick the most recent
+        Raises FileNotFoundError with a helpful hint if nothing is found.
+        """
+        base_results = self._base_input_results_dir()
+        # 1) Direct match
+        if self.run_name:
+            run_dir = base_results / self.run_name
+            direct = run_dir / 'mlp_predictions.csv'
+            if direct.exists():
+                return direct
+            # 2) Alternate names inside the run dir
+            if run_dir.exists():
+                for alt_name in ['predictions.csv', 'mlp_preds.csv', 'preds.csv']:
+                    candidate = run_dir / alt_name
+                    if candidate.exists():
+                        if self.verbose:
+                            print(f"Found alternate predictions file: {candidate}")
+                        return candidate
+        # 3) Recursive search for mlp_predictions.csv
+        mlp_hits = list(base_results.rglob('mlp_predictions.csv')) if base_results.exists() else []
+        if mlp_hits:
+            mlp_hits.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+            if self.verbose:
+                print(f"Auto-selected latest mlp_predictions.csv: {mlp_hits[0]}")
+            return mlp_hits[0]
+        # 4) Fallback to any CSV
+        any_csv = list(base_results.rglob('*.csv')) if base_results.exists() else []
+        if any_csv:
+            any_csv.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+            if self.verbose:
+                print(f"WARNING: Using most recent CSV (name not standard): {any_csv[0]}")
+            return any_csv[0]
+        # Nothing found — build a helpful message
+        runs = [p for p in base_results.iterdir() if p.is_dir()] if base_results.exists() else []
+        run_list = "\n".join(f" - {p.name}" for p in sorted(runs)) if runs else "(no run folders found)"
+        raise FileNotFoundError(
+            f"No predictions CSV found. Looked under: {base_results}\n"
+            f"Expected: results/<run_name>/mlp_predictions.csv\n"
+            f"Current run_name: {self.run_name}\n"
+            f"Available run folders:\n{run_list}"
+        )
 
     @staticmethod
     def _black_scholes_call(S, K, T, r, sigma, q=0):
@@ -137,31 +223,86 @@ class IVAnalyzer:
         """Reusable error bar legend proxy"""
         return Line2D([0], [0], color='black', lw=1.5)
 
+    def _harmonize_columns(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Make column names consistent and backfill expected *_input/target columns from common aliases."""
+        # Normalize header whitespace / BOM
+        df = df.copy()
+        df.columns = df.columns.str.strip().str.replace('\ufeff', '', regex=False)
+
+        # Alias map: source_name -> destination_expected_name
+        aliases = {
+            # Targets
+            'true_price': 'actual_mid_price',
+            'actual_price': 'actual_mid_price',
+            'y_true': 'actual_mid_price',
+            'predicted_price': 'predicted_mid_price',
+            'y_pred': 'predicted_mid_price',
+            # Core BSM inputs (non-suffixed to *_input)
+            'spx_close': 'spx_close_input',
+            'strike_price': 'strike_price_input',
+            'risk_free_rate': 'risk_free_rate_input',
+            'dividend_rate': 'dividend_rate_input',
+            'historical_volatility': 'historical_volatility_input',
+            'days_to_maturity': 'days_to_maturity_input',
+            # Sometimes different casing
+            'Days_to_maturity': 'days_to_maturity_input',
+            'Risk_free_rate': 'risk_free_rate_input',
+            'Dividend_rate': 'dividend_rate_input',
+        }
+
+        # Create missing expected columns from aliases when possible
+        for src, dst in aliases.items():
+            if dst not in df.columns and src in df.columns:
+                df[dst] = df[src]
+
+        # If time info comes as time_in_years, create days_to_maturity_input and time_to_expiry
+        if 'days_to_maturity_input' not in df.columns and 'time_in_years' in df.columns:
+            df['time_to_expiry'] = df['time_in_years']
+            df['days_to_maturity_input'] = (df['time_in_years'] * 365.25).round().astype(int)
+
+        # Ensure time_to_expiry exists if days_to_maturity_input present
+        if 'time_to_expiry' not in df.columns:
+            if 'days_to_maturity_input' in df.columns:
+                df['time_to_expiry'] = df['days_to_maturity_input'] / 365.25
+            elif 'days_to_maturity' in df.columns:
+                df['time_to_expiry'] = df['days_to_maturity'] / 365.25
+
+        # Type coercion for numeric columns we rely on
+        numeric_like = [
+            'actual_mid_price','predicted_mid_price','spx_close_input','strike_price_input',
+            'risk_free_rate_input','dividend_rate_input','historical_volatility_input',
+            'days_to_maturity_input','time_to_expiry'
+        ]
+        for c in numeric_like:
+            if c in df.columns:
+                df[c] = pd.to_numeric(df[c], errors='coerce')
+
+        return df
+
     def load_and_preprocess_data(self):
         """Load and preprocess prediction data"""
-        predictions_path = self._results_dir() / 'mlp_predictions.csv'
-        
         try:
+            predictions_path = self._resolve_predictions_path()
             if self.verbose:
                 print(f"Loading predictions from: {predictions_path}")
-            
             df = pd.read_csv(predictions_path)
             if self.verbose:
-                print(f"Successfully loaded {len(df)} predictions")
-            
-            # Standardize columns and validate
+                print(f"Successfully loaded {len(df)} rows from {predictions_path.name}")
+
+            # Harmonize/alias columns and standardize core fields
+            df = self._harmonize_columns(df)
             df = self._standardize_columns(df)
+
+            # Validate required fields now that harmonization is done
             required = ['actual_mid_price', 'predicted_mid_price', 'spx_close_input',
-                       'strike_price_input', 'risk_free_rate_input', 'time_to_expiry']
+                        'strike_price_input', 'risk_free_rate_input', 'time_to_expiry']
             missing = [c for c in required if c not in df.columns]
             if missing:
-                print(f"Missing required columns: {missing}")
+                print(f"Missing required columns AFTER harmonization: {missing}")
                 return None
-            
             return df
-            
-        except FileNotFoundError:
-            print(f"Could not find predictions file at {predictions_path}")
+        except FileNotFoundError as e:
+            print(str(e))
             return None
         except Exception as e:
             print(f"Error reading file: {e}")
@@ -305,6 +446,7 @@ class IVAnalyzer:
         
         plt.tight_layout()
         output_path = self._results_dir() / 'iv_analysis.png'
+        self._ensure_parent(output_path)
         plt.savefig(output_path, dpi=300, bbox_inches='tight')
         plt.close()
         if self.verbose:
@@ -315,7 +457,7 @@ class IVAnalyzer:
         fig, axes = plt.subplots(2, 2, figsize=(16, 12))
         fig.suptitle('Volatility Smile and Residual Analysis', fontsize=16, fontweight='bold')
         
-        atm_strike = df['spx_close_input'].median()
+        atm_strike = float(df['spx_close_input'].median()) if not df['spx_close_input'].empty else 0.0
         
         # 1. Volatility Smile - All options
         scatter = axes[0,0].scatter(df['strike_price_input'], df['predicted_iv'], c=df['days_to_maturity'], cmap='turbo', s=1, alpha=0.5)
@@ -377,6 +519,7 @@ class IVAnalyzer:
         
         plt.tight_layout()
         output_path = self._results_dir() / 'volatility_smile_analysis.png'
+        self._ensure_parent(output_path)
         plt.savefig(output_path, dpi=300, bbox_inches='tight')
         plt.close()
     def plot_detailed_iv_breakdowns(self, df):
@@ -518,6 +661,7 @@ class IVAnalyzer:
         
         plt.tight_layout()
         output_path = self._results_dir() / 'iv_detailed_breakdowns.png'
+        self._ensure_parent(output_path)
         plt.savefig(output_path, dpi=300, bbox_inches='tight')
         plt.close()
         if self.verbose:
@@ -695,6 +839,7 @@ class IVAnalyzer:
         lines.extend(['', '=' * 60, 'END OF ANALYSIS', '=' * 60])
 
         output_path = self._results_dir() / 'iv_comprehensive_summary.txt'
+        self._ensure_parent(output_path)
         with open(output_path, 'w') as f:
             f.write('\n'.join(lines))
         if self.verbose:
@@ -727,5 +872,19 @@ class IVAnalyzer:
 
 # Usage
 if __name__ == '__main__':
-    analyzer = IVAnalyzer()
-    result = analyzer.run_full_analysis()
+    arg = sys.argv[1] if len(sys.argv) > 1 else 'all'
+    if arg.lower() == 'all':
+        run_names = IVAnalyzer.discover_run_names()
+        if not run_names:
+            print("No run_MLP* folders found under results/. Nothing to do.")
+            sys.exit(0)
+        print(f"Discovered runs: {', '.join(run_names)}")
+        for rn in run_names:
+            print(f"\n=== Processing {rn} ===")
+            analyzer = IVAnalyzer(run_name=rn)
+            analyzer.run_full_analysis()
+        print("\nAll runs completed. Outputs saved under vol_results/<run_name>/")
+    else:
+        analyzer = IVAnalyzer(run_name=arg)
+        print(f"Using run_name: {analyzer.run_name}")
+        analyzer.run_full_analysis()
