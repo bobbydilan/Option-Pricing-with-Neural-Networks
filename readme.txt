@@ -3,17 +3,33 @@ SPX European Call Option Pricing — Regression, Black–Scholes & MLPs
 
 Overview
 --------
-This repository contains a complete end-to-end pipeline for analysing and pricing S&P 500 European call options. The project combines traditional regression methods, a vectorised Black–Scholes-Merton reference implementation, and modern neural networks (two successive MLP architectures). The work is directly tied to the accompanying thesis: “Enhancing Black–Scholes-Merton Option Pricing Accuracy with Neural Networks: A Data-Driven Approach on European S&P 500 Index Options.”
+This repository contains a complete end-to-end pipeline for analysing and pricing S&P 500 European call options. 
+The project combines traditional regression methods, a vectorised Black–Scholes-Merton reference implementation, 
+and modern neural networks (two successive MLP architectures). The work is directly tied to the accompanying 
+thesis: “Enhancing Black–Scholes-Merton Option Pricing Accuracy with Neural Networks: A Data-Driven Approach on 
+European S&P 500 Index Options.”
 
-The repository is structured so that anyone can reproduce the entire workflow with one key requirement: the main options dataset (`final_options_dataset.csv`) must be placed in the repository root. This file is not included in the repository due to licensing and size constraints, but it can be requested or re-created from OptionMetrics data. All other code, utilities, and result artefacts are included and structured to allow full replication. The final_options_dataset.csv can be created directly by the data_processing.py script in 00General if the appropriate datasets are provided.
+The repository is structured so that anyone can reproduce the entire workflow with one key requirement: the 
+main options dataset (`final_options_dataset.csv`) must be placed in the repository root. This file is not 
+included in the repository due to licensing and size constraints, but it can be requested or re-created from 
+OptionMetrics data. All other code, utilities, and result artefacts are included and structured to allow full 
+replication. The final_options_dataset.csv can be created directly by the data_processing.py script in 00General 
+if the appropriate datasets are provided.
 
-It is important to note that very large intermediate outputs—such as full prediction datasets from trained models—are not included here to avoid bloating the repository. This means that certain scripts, like the model comparison tool, cannot be executed out of the box because they require those prediction datasets. However, the results of those scripts are visible in the respective `results/` folders, and the full process to regenerate them is completely transparent from the code.
+It is important to note that very large intermediate outputs—such as full prediction datasets from trained models—are 
+not included here to avoid bloating the repository. This means that certain scripts, like the model comparison tool, 
+cannot be executed out of the box because they require those prediction datasets. However, the results of those scripts 
+are visible in the respective `results/` folders, and the full process to regenerate them is completely transparent 
+from the code.
 
 ---
 
 Project Structure
 -----------------
-The repository follows a logical progression from raw data to baselines, to reference models, and finally to advanced neural architectures. Keeping the directory structure consistent is crucial—many scripts assume these paths. To run the models below, it is suggested to download these codes in the same folder structure as present in this repository.
+The repository follows a logical progression from raw data to baselines, to reference models, and finally to 
+advanced neural architectures. Keeping the directory structure consistent is crucial—many scripts assume these 
+paths. To run the models below, it is suggested to download these codes in the same folder structure as present 
+in this repository.
 
 - 00Data/  
   Contains auxiliary macroeconomic and market time series used as inputs. This includes SPX price data, 
@@ -124,7 +140,11 @@ Each MLP run produces:
 - Multiple diagnostic plots (loss curves, prediction scatterplots, residual histograms, error heatmaps, 
 vega-weighted error analyses, implied volatility visuals)
 
-Due to their size, the full prediction CSVs are not included in the GitHub repository. To directly see prediction  values, you must re-run the scripts. This means, for example, that while the process of model comparison is fully documented in code, you cannot execute it without regenerating predictions. However, the already-produced plots and summaries are included so that the final insights are still accessible.
+Due to their size, the full prediction CSVs are not included in the GitHub repository. 
+To directly see prediction  values, you must re-run the scripts. This means, for example, 
+that while the process of model comparison is fully documented in code, you cannot execute it 
+without regenerating predictions. However, the already-produced plots and summaries are included 
+so that the final insights are still accessible.
 
 ---
 
@@ -138,7 +158,8 @@ Reproducibility
 
 Closing
 -------
-This repository is intended as both a reference and a reproducible workflow for applying machine learning to option pricing. It connects theory (Black–Scholes) with practical empirical modelling (regressions and neural networks), and emphasises diagnostics and interpretability as much as raw performance.
+This repository is intended as both a reference and a reproducible workflow for applying machine learning 
+to option pricing. It connects theory (Black–Scholes) with practical empirical modelling (regressions and 
+neural networks), and emphasises diagnostics and interpretability as much as raw performance.
 
 License: MIT
-
